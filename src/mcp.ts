@@ -9,6 +9,8 @@ export const INSTRUCTIONS = [
   "lilcal is the user's personal reminder calendar. It shows desktop notifications through D-Bus when reminders come due.",
   'When the user asks to be reminded of something, or mentions a future deadline, appointment, or follow-up, call add_reminder right away instead of asking for confirmation.',
   'Pass "at" in natural language ("next tuesday 10am", "tomorrow", "in 2 hours", "friday") or ISO 8601. Put the context the user will need when the reminder fires (paths, links, what to pick back up) in "notes".',
+  'Only set "prompt" when the user wants work performed, not for reminder-only requests. It opts into autonomous noninteractive pi execution at "at", with pi tool access under the user\'s permissions. "lead_minutes" advances only the desktop reminder, not execution.',
+  'Set "cwd" to an existing directory for the task; it defaults to the user\'s home. Task results and errors are stored in "run", returned by list_reminders and CLI show/list --json. Editing "at" re-arms execution; editing prompt or cwd preserves run history. Active tasks cannot have at, prompt, or cwd edited. Completing or removing a task does not stop an active pi process.',
   'Every response includes the resolved local time. Repeat it to the user so they can correct it.',
   'At the start of a session, list_reminders shows what is due, overdue, or coming up.',
   'send_notification shows a desktop notification immediately. Use it to get the user\'s attention when a long task finishes or needs input.',
@@ -77,7 +79,7 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
     {
       name: 'add_reminder',
       description:
-        'Add a reminder or event to the user\'s calendar. "at" accepts natural language or ISO 8601. Returns the item with its resolved local time and id.',
+        'Add a reminder, event, or scheduled pi task to the user\'s calendar. "at" accepts natural language or ISO 8601. Optional "prompt" opts into autonomous work at that time. Returns the item with its resolved local time and id.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -85,6 +87,8 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
           at: str('When it is due: "next tuesday 10am", "tomorrow", "in 2 hours", "friday", or ISO 8601. Without a time it becomes an all-day item notified at 09:00.'),
           end: str('Optional end time for events, e.g. "11am" or ISO 8601'),
           notes: str('Context to show when the reminder fires: what to pick back up, paths, links, ticket ids'),
+          prompt: str('Task for autonomous noninteractive pi execution at "at". Only provide when the user wants work performed, with pi tool access under their permissions.'),
+          cwd: str('Existing task working directory, resolved relative to this server. Requires prompt. Defaults to the user\'s home.'),
           tags: strList('Optional tags, e.g. the project name'),
           lead_minutes: { type: 'number', description: 'Notify this many minutes before "at". Default 0.' },
         },
@@ -98,6 +102,8 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
             at: s(a.at, 'at', true),
             end: s(a.end, 'end'),
             notes: s(a.notes, 'notes'),
+            prompt: s(a.prompt, 'prompt', a.prompt !== undefined),
+            cwd: s(a.cwd, 'cwd', a.cwd !== undefined),
             tags: list(a.tags, 'tags'),
             lead: num(a.lead_minutes, 'lead_minutes'),
           },
@@ -109,7 +115,7 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
     {
       name: 'list_reminders',
       description:
-        'List reminders and events, soonest first. Without filters returns everything not yet done, including overdue items.',
+        'List reminders, events, and tasks, soonest first, including run status, output, and errors in JSON. Without filters returns everything not yet done, including overdue items.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -117,7 +123,7 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
           to: str('Only items at or before this time (natural language or ISO 8601)'),
           include_done: { type: 'boolean', description: 'Include completed items. Default false.' },
           tag: str('Only items with this tag'),
-          query: str('Case-insensitive text match on title and notes'),
+          query: str('Case-insensitive text match on title, notes, and prompt'),
         },
       },
       run: async (a) => {
@@ -136,7 +142,7 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
     },
     {
       name: 'update_reminder',
-      description: 'Change a reminder. Only the given fields change. Changing "at" re-arms the notification. Pass an empty string to clear end or notes.',
+      description: 'Change only the given fields. Editing "at" re-arms notification and pi execution; prompt/cwd edits preserve run history. Active tasks reject at/prompt/cwd edits. Pass an empty string to clear end, notes, or prompt; empty cwd resets to home.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -145,6 +151,8 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
           at: str('New time. A bare time like "4pm" keeps the current day.'),
           end: str('New end time, or "" to clear'),
           notes: str('New notes, or "" to clear'),
+          prompt: { type: ['string', 'null'], description: 'Autonomous pi task, or ""/null to clear it and cwd. Only set when the user wants work performed.' },
+          cwd: { type: ['string', 'null'], description: 'Existing working directory for pi, or ""/null to reset to home. Requires prompt.' },
           tags: strList('Replacement tag list'),
           lead_minutes: { type: 'number', description: 'Minutes before "at" to notify' },
         },
@@ -161,6 +169,12 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
         if (end !== undefined) patch.end = end === '' ? null : end;
         const notes = s(a.notes, 'notes');
         if (notes !== undefined) patch.notes = notes === '' ? null : notes;
+          const prompt = s(a.prompt, 'prompt');
+          if (a.prompt === null || prompt === '') patch.prompt = null;
+          else if (prompt !== undefined) patch.prompt = prompt;
+          const cwd = s(a.cwd, 'cwd');
+          if (a.cwd === null || cwd === '') patch.cwd = null;
+          else if (cwd !== undefined) patch.cwd = cwd;
         const tags = list(a.tags, 'tags');
         if (tags !== undefined) patch.tags = tags;
         const lead = num(a.lead_minutes, 'lead_minutes');
@@ -171,7 +185,7 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
     },
     {
       name: 'complete_reminder',
-      description: 'Mark a reminder as done (or not done with done=false). Done items stop notifying and leave the default list.',
+      description: 'Mark a reminder as done (or not done with done=false). Done items stop future reminders and tasks and leave the default list. Does not stop an active pi process.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -187,7 +201,7 @@ export function createTools(notifier: Notifier = sendNotification, clock: () => 
     },
     {
       name: 'remove_reminder',
-      description: 'Delete a reminder permanently. Prefer complete_reminder unless the user asks to delete.',
+      description: 'Delete a reminder permanently. Does not stop an active pi process. Prefer complete_reminder unless the user asks to delete.',
       inputSchema: {
         type: 'object',
         properties: { id: str('Item id (a unique prefix is enough)') },

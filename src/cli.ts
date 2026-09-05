@@ -16,10 +16,10 @@ const USAGE = `lilcal ${VERSION}: reminders and events for you and your agents
 
 Usage
   lilcal                         open the TUI
-  lilcal add <title> [--at <when>] [--end <when>] [--notes <text>] [--tag <t>]... [--lead <min>]
+  lilcal add <title> [--at <when>] [--end <when>] [--notes <text>] [--tag <t>]... [--lead <min>] [--prompt <task>] [--cwd <dir>]
   lilcal list [--all] [--from <when>] [--to <when>] [--tag <t>] [-q <text>]
   lilcal show <id>
-  lilcal edit <id> [--title <t>] [--at <when>] [--end <when>] [--notes <text>] [--tag <t>]... [--lead <min>]
+  lilcal edit <id> [--title <t>] [--at <when>] [--end <when>] [--notes <text>] [--tag <t>]... [--lead <min>] [--prompt <task>] [--cwd <dir>]
   lilcal done <id>...            mark done (undone reverses it)
   lilcal rm <id>...              delete
   lilcal notify <summary> [body] [--urgent]
@@ -32,6 +32,11 @@ Every command that prints an item accepts --json.
 Dates: "next tuesday 10am", "tomorrow", "in 2 hours", "friday", "2026-09-12T15:00".
 Without --at the date comes from the title: lilcal add "call mom sunday 6pm".
 Pass --end "" or --notes "" to edit to clear a field.
+--prompt schedules autonomous, noninteractive pi work at --at, with your pi tool permissions.
+--cwd selects its working directory (default: home). --lead only advances the notification.
+Edit --prompt "" clears the task; --cwd "" resets its directory to home.
+Editing --at re-arms execution; prompt/cwd edits do not. Active tasks cannot be rescheduled.
+Task results are available in show and list --json.
 `;
 
 type Opts = Record<string, string | boolean | string[] | undefined>;
@@ -78,7 +83,7 @@ async function main(argv: string[]): Promise<void> {
       console.log(VERSION);
       return;
     case 'add': {
-      const { opts, positionals } = parse(rest, { at: text, end: text, notes: text, tag: tags, lead: text, json });
+      const { opts, positionals } = parse(rest, { at: text, end: text, notes: text, prompt: text, cwd: text, tag: tags, lead: text, json });
       const title = positionals.join(' ');
       if (!title.trim()) throw new Error('add needs a title');
       const item = await addItem({
@@ -86,6 +91,8 @@ async function main(argv: string[]): Promise<void> {
         at: opts.at as string | undefined,
         end: opts.end as string | undefined,
         notes: opts.notes as string | undefined,
+        prompt: opts.prompt as string | undefined,
+        cwd: opts.cwd as string | undefined,
         tags: opts.tag as string[] | undefined,
         lead: lead(opts.lead),
       });
@@ -115,7 +122,7 @@ async function main(argv: string[]): Promise<void> {
       return console.log(formatDetail(item));
     }
     case 'edit': {
-      const { opts, positionals } = parse(rest, { title: text, at: text, end: text, notes: text, tag: tags, lead: text, json });
+      const { opts, positionals } = parse(rest, { title: text, at: text, end: text, notes: text, prompt: text, cwd: text, tag: tags, lead: text, json });
       const id = positionals[0];
       if (!id) throw new Error('edit needs an id');
       const patch: Patch = {};
@@ -123,6 +130,8 @@ async function main(argv: string[]): Promise<void> {
       if (typeof opts.at === 'string') patch.at = opts.at;
       if (typeof opts.end === 'string') patch.end = opts.end === '' ? null : opts.end;
       if (typeof opts.notes === 'string') patch.notes = opts.notes === '' ? null : opts.notes;
+      if (typeof opts.prompt === 'string') patch.prompt = opts.prompt === '' ? null : opts.prompt;
+      if (typeof opts.cwd === 'string') patch.cwd = opts.cwd === '' ? null : opts.cwd;
       if (Array.isArray(opts.tag)) patch.tags = opts.tag;
       const l = lead(opts.lead);
       if (l !== undefined) patch.lead = l;

@@ -1,4 +1,17 @@
 import { randomBytes } from 'node:crypto';
+import { isAbsolute } from 'node:path';
+
+export type TaskRun = {
+  id: string;
+  status: 'running' | 'succeeded' | 'failed';
+  startedAt: string;
+  deadlineAt: string;
+  finishedAt?: string;
+  output?: string;
+  error?: string;
+  notifiedAt?: string;
+  notificationClaim?: { id: string; until: string };
+};
 
 export type Item = {
   id: string;
@@ -7,6 +20,9 @@ export type Item = {
   end?: string;
   allDay?: boolean;
   notes?: string;
+  prompt?: string;
+  cwd?: string;
+  run?: TaskRun;
   tags?: string[];
   lead?: number;
   done?: boolean;
@@ -50,6 +66,11 @@ export function findItem(items: Item[], idOrPrefix: string): Item {
 
 export function validate(item: Item): void {
   if (!item.title.trim()) throw new Error('title is empty');
+  if (item.prompt !== undefined && !item.prompt.trim()) throw new Error('prompt is empty');
+  if (item.cwd !== undefined) {
+    if (!item.prompt) throw new Error('cwd requires a prompt');
+    if (!isAbsolute(item.cwd)) throw new Error('cwd must be an absolute directory');
+  }
   if (Number.isNaN(atMs(item))) throw new Error(`invalid date: ${item.at}`);
   if (item.end !== undefined) {
     const end = new Date(item.end).getTime();

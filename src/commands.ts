@@ -1,3 +1,6 @@
+import { statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { DEFAULT_HOUR, extractWhen, parseWhen, toISO, type Parsed } from './dates.js';
 import { atMs, findItem, newId, sortItems, validate, type Item } from './model.js';
 import { load, update } from './store.js';
@@ -7,6 +10,8 @@ export type AddInput = {
   at?: string;
   end?: string;
   notes?: string;
+  prompt?: string;
+  cwd?: string;
   tags?: string[];
   lead?: number;
   fallbackDay?: Date;
@@ -25,6 +30,8 @@ export type Patch = {
   at?: string;
   end?: string | null;
   notes?: string | null;
+  prompt?: string | null;
+  cwd?: string | null;
   tags?: string[];
   lead?: number | null;
 };
@@ -56,6 +63,7 @@ export async function addItem(input: AddInput, now: Date = new Date()): Promise<
   const tags = normalizeTags(input.tags);
   if (tags.length) item.tags = tags;
   if (input.lead !== undefined) item.lead = input.lead;
+  patchTask(item, input);
   validate(item);
   await update((items) => {
     items.push(item);
@@ -73,7 +81,7 @@ export async function listItems(filter: ListFilter = {}): Promise<Item[]> {
     const t = atMs(item);
     if (filter.from && t < filter.from.getTime()) return false;
     if (filter.to && t > filter.to.getTime()) return false;
-    if (query && !`${item.title} ${item.notes ?? ''}`.toLowerCase().includes(query)) return false;
+    if (query && !`${item.title} ${item.notes ?? ''} ${item.prompt ?? ''}`.toLowerCase().includes(query)) return false;
     return true;
   });
 }
@@ -86,6 +94,9 @@ export async function updateItem(id: string, patch: Patch, now: Date = new Date(
   let result: Item | undefined;
   await update((items) => {
     const item = findItem(items, id);
+    if (item.run?.status === 'running' && (patch.at !== undefined || patch.prompt !== undefined || patch.cwd !== undefined)) {
+      throw new Error('cannot change at, prompt, or cwd while a task is running');
+    }
     if (patch.title !== undefined) item.title = patch.title.trim();
     if (patch.at !== undefined) {
       const when = parseWhen(patch.at, now);
@@ -99,6 +110,7 @@ export async function updateItem(id: string, patch: Patch, now: Date = new Date(
       if (when.hasTime) delete item.allDay;
       else item.allDay = true;
       delete item.notifiedAt;
+      delete item.run;
       if (when.end) item.end = toISO(when.end);
     }
     if (patch.end === null) delete item.end;
@@ -112,6 +124,7 @@ export async function updateItem(id: string, patch: Patch, now: Date = new Date(
     }
     if (patch.lead === null) delete item.lead;
     else if (patch.lead !== undefined) item.lead = patch.lead;
+    patchTask(item, patch);
     validate(item);
     result = item;
   });
@@ -137,6 +150,32 @@ export async function removeItem(id: string): Promise<Item> {
     return items.filter((i) => i.id !== item.id);
   });
   return result!;
+}
+
+function patchTask(item: Item, patch: Pick<Patch, 'prompt' | 'cwd'>): void {
+  if (patch.prompt === undefined && patch.cwd === undefined) return;
+  if (patch.prompt === null) {
+    delete item.prompt;
+    delete item.cwd;
+  } else if (patch.prompt !== undefined) {
+    const prompt = patch.prompt.trim();
+    if (!prompt) throw new Error('prompt is empty');
+    item.prompt = prompt;
+  }
+  if (patch.cwd !== undefined && patch.cwd !== null && !item.prompt) {
+    throw new Error('cwd requires a prompt');
+  }
+  if (!item.prompt) return;
+  if (patch.cwd !== undefined && patch.cwd !== null && !patch.cwd.trim()) {
+    throw new Error('cwd is empty');
+  }
+  const cwd = patch.cwd === null ? homedir() : patch.cwd !== undefined ? resolve(patch.cwd) : item.cwd ?? homedir();
+  try {
+    if (!statSync(cwd).isDirectory()) throw new Error('not a directory');
+  } catch {
+    throw new Error(`cwd must be an existing directory: ${cwd}`);
+  }
+  item.cwd = cwd;
 }
 
 function parseEnd(text: string, start: Date): string {

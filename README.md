@@ -1,8 +1,8 @@
 # lilcal
 
-Reminders and events for you and your agents. One JSON file underneath, four ways in: a calendar TUI, a CLI, an MCP server for Claude Code and Codex, and a daemon that fires desktop notifications over D-Bus.
+Reminders and scheduled agent tasks. One JSON file underneath, four ways in: a calendar TUI, a CLI, an MCP server, and a daemon that runs tasks through pi and delivers desktop notifications over D-Bus.
 
-The point is continuity. Tell an agent "remind me next week to follow up on this" and the reminder lands in the same calendar you open in the terminal, then pops up on your desktop when it is due, with the notes the agent left for you.
+Tell an agent "remind me next week to follow up on this" for a desktop reminder, or "review this project tomorrow morning" for work performed independently. Tasks run at the scheduled time and their results arrive on your desktop.
 
 ## Install
 
@@ -10,7 +10,7 @@ The point is continuity. Tell an agent "remind me next week to follow up on this
 git clone <this repo> lilcal && cd lilcal
 pnpm install
 bun link                 # puts `lilcal` on PATH (~/.bun/bin)
-lilcal service install   # runs the notifier as a systemd user service
+lilcal service install   # runs scheduled tasks and notifications as a systemd user service
 ```
 
 Needs Bun 1.3+ (the TUI is built on [OpenTUI](https://github.com/anomalyco/opentui)), pnpm for dependencies, and a Linux desktop that provides `org.freedesktop.Notifications`.
@@ -33,6 +33,31 @@ lilcal add "Review PR #42" --at "next tuesday 10am" --notes "branch feat/x" --ta
 lilcal list --json
 lilcal notify "Build finished" "3 tests failed in store.test.ts"
 ```
+
+## Scheduled tasks with pi
+
+Add `prompt` to an event to have [pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) carry out work at its scheduled time. Install pi and configure its provider/model and authentication first, as you would for an ordinary pi session. Task execution also uses GNU coreutils `timeout` to enforce deadlines independently of the daemon.
+
+```sh
+lilcal add "Review project" --at "tomorrow 9am" \
+  --prompt "Review recent changes and summarize any issues. Do not modify files." \
+  --cwd "$PWD" --json
+lilcal service install
+lilcal show <id>                   # prompt, execution status, result or error
+lilcal edit <id> --at "in 1 hour"  # explicitly schedule another attempt
+```
+
+The existing MCP `add_reminder` and `update_reminder` tools accept the same `prompt` and `cwd` fields. `list_reminders` returns execution details in `run`. Omit `prompt` for an ordinary reminder. Clear it with `lilcal edit <id> --prompt ""` or an empty/null MCP field. `cwd` defaults to your home directory; explicit relative paths are resolved when the event is created or edited.
+
+Each task starts a fresh, noninteractive `pi --print --mode text --no-session` process with the event title, time, notes, tags, and task prompt. It uses pi's configured model, authentication, extensions, and tools, with your user permissions. These are unattended agent runs, so schedule only work you authorize pi to perform. The agent receives the lilcal CLI location and data path so it can manage follow-up events when instructed.
+
+Tasks run at `at`, including missed events after the daemon starts. `lead` only sends an advance reminder. The daemon polls while tasks run, with up to four tracked tasks executing concurrently and a 15-minute limit per run. Successes and failures produce desktop notifications; failures are critical. Responses are stored up to 64K characters, with a shorter desktop preview. `show` and JSON responses expose the saved result. Successful execution does not mark the calendar item done.
+
+Execution is claimed in the data file before pi starts. Failed or interrupted runs require an explicit `at` edit to try again; editing the prompt or notes alone does not replay work. After a crash, a running claim becomes failed after its deadline and a short grace period. Check any partial effects before rescheduling. Notification delivery is retried independently of execution. A crash around notification delivery can duplicate a notification, but does not replay the task.
+
+While a task is running, its time, prompt, and directory cannot be edited. Marking it done or deleting it does not cancel the active process; deleting also discards its eventual result. Stopping the daemon interrupts its active pi processes. `daemon --once` waits for the batch it starts (up to four tasks).
+
+`LILCAL_PI` selects an alternative pi executable or wrapper (a path or executable name, not a shell command). The service installer captures this setting, your `PATH`, and the resolved data path, and restarts the service. Reinstall after changing these settings. Configure any additional provider environment in the systemd user service environment; the installer does not copy authentication variables.
 
 ## Terminal
 
@@ -62,7 +87,7 @@ Dates accept `next tuesday 10am`, `tomorrow`, `in 2 hours`, `friday`, `monday mo
 
 ## Notifications
 
-`lilcal daemon` checks every 30 seconds and notifies each open item once, at its time or `--lead` minutes before. Items that came due while the daemon was off fire as soon as it starts, marked overdue and critical, so nothing slips past. Notifications stay on screen until dismissed.
+`lilcal daemon` checks every 30 seconds and notifies each open reminder once, at its time or `--lead` minutes before. Reminders that came due while the daemon was off fire as soon as it starts, marked overdue and critical. Task events deliver pi's result instead of an ordinary due-time reminder. Notifications request an unlimited display timeout; the desktop controls presentation.
 
 ```sh
 lilcal service status              # systemd unit state
@@ -72,7 +97,7 @@ lilcal daemon --once               # single check, cron friendly
 
 ## Data
 
-Items live in `~/.local/share/lilcal/items.json` (`LILCAL_DATA` overrides the path, `lilcal path` prints it). Each item has `id`, `title`, `at`, `createdAt`, and optionally `end`, `allDay`, `notes`, `tags`, `lead`, `done`, and `notifiedAt`. Times are ISO 8601 with the local offset. Writes go through a lock and an atomic rename, so the TUI, CLI, daemon, and agents can write at the same time.
+Items live in `~/.local/share/lilcal/items.json` (`LILCAL_DATA` overrides the path, `lilcal path` prints it). Each item has `id`, `title`, `at`, `createdAt`, and optionally `end`, `allDay`, `notes`, `tags`, `lead`, `done`, `notifiedAt`, `prompt`, `cwd`, and `run`. A run records its ID, status (`running`, `succeeded`, or `failed`), start/deadline/finish times, output or error, and result notification time. Rescheduling clears the previous run. Times are ISO 8601 with the local offset. Writes go through a lock and an atomic rename, so the TUI, CLI, daemon, and agents can write at the same time.
 
 ## Develop
 

@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { addItem, completeItem, getItem, listItems, removeItem, updateItem } from '../src/commands.js';
+import type { TaskRun } from '../src/model.js';
+import { update } from '../src/store.js';
 import { NOW, useTempStore } from './helpers.js';
 
 beforeEach(() => {
@@ -80,5 +84,86 @@ describe('completeItem and removeItem', () => {
     expect((await completeItem(item.id, false)).done).toBeUndefined();
     await removeItem(item.id);
     expect(await listItems()).toEqual([]);
+  });
+});
+
+describe('scheduled pi tasks', () => {
+  const finishedRun: TaskRun = {
+    id: 'run-1',
+    status: 'succeeded',
+    startedAt: NOW.toISOString(),
+    deadlineAt: new Date(NOW.getTime() + 60_000).toISOString(),
+    finishedAt: NOW.toISOString(),
+    output: 'Report ready',
+  };
+
+  it('trims prompts, defaults cwd to home, resolves relative directories, and searches prompts', async () => {
+    const item = await addItem({ title: 'Report', at: 'tomorrow', prompt: '  Summarize deployment logs  ' }, NOW);
+    expect(item.prompt).toBe('Summarize deployment logs');
+    expect(item.cwd).toBe(homedir());
+    expect((await listItems({ query: 'DEPLOYMENT' })).map((i) => i.id)).toEqual([item.id]);
+    const changed = await updateItem(item.id, { cwd: '.' }, NOW);
+    expect(changed.cwd).toBe(resolve('.'));
+    expect((await updateItem(item.id, { cwd: null }, NOW)).cwd).toBe(homedir());
+    const relative = await addItem({ title: 'Test', at: 'tomorrow', prompt: 'Run tests', cwd: 'test/..' }, NOW);
+    expect(relative.cwd).toBe(resolve('.'));
+  });
+
+  it('rejects empty prompts, cwd without prompt, missing directories, and files as cwd', async () => {
+    for (const input of [
+      { prompt: '' },
+      { prompt: '   ' },
+      { cwd: '.' },
+      { prompt: 'Run tests', cwd: '' },
+      { prompt: 'Run tests', cwd: 'no-such-task-directory' },
+      { prompt: 'Run tests', cwd: 'package.json' },
+    ]) {
+      await expect(addItem({ title: 'Test', at: 'tomorrow', ...input }, NOW)).rejects.toThrow();
+    }
+    expect(await listItems()).toEqual([]);
+    const item = await addItem({ title: 'Test', at: 'tomorrow' }, NOW);
+    await expect(updateItem(item.id, { cwd: '.' }, NOW)).rejects.toThrow(/requires a prompt/);
+    await expect(updateItem(item.id, { prompt: ' ' }, NOW)).rejects.toThrow(/prompt is empty/);
+    await updateItem(item.id, { prompt: 'Run tests' }, NOW);
+    await expect(updateItem(item.id, { cwd: 'package.json' }, NOW)).rejects.toThrow(/existing directory/);
+    expect((await getItem(item.id)).cwd).toBe(homedir());
+  });
+
+  it('retains execution history through metadata edits and clearing a task, but re-arms on explicit at', async () => {
+    const item = await addItem({ title: 'Report', at: 'tomorrow', prompt: 'Write report', cwd: '.' }, NOW);
+    await update((items) => {
+      items[0]!.run = finishedRun;
+      items[0]!.notifiedAt = NOW.toISOString();
+    });
+    const edited = await updateItem(item.id, { title: 'New title', notes: 'Context', prompt: 'Revise report', cwd: 'test', lead: 5 }, NOW);
+    expect(edited.run).toEqual(finishedRun);
+    expect(edited.notifiedAt).toBe(NOW.toISOString());
+    const cleared = await updateItem(item.id, { prompt: null }, NOW);
+    expect(cleared.prompt).toBeUndefined();
+    expect(cleared.cwd).toBeUndefined();
+    expect(cleared.run).toEqual(finishedRun);
+    const restored = await updateItem(item.id, { prompt: 'Write report again' }, NOW);
+    expect(restored.run).toEqual(finishedRun);
+    expect(restored.cwd).toBe(homedir());
+    const rearmed = await updateItem(item.id, { at: item.at }, NOW);
+    expect(rearmed.run).toBeUndefined();
+    expect(rearmed.notifiedAt).toBeUndefined();
+    expect(rearmed.prompt).toBe('Write report again');
+  });
+
+  it('blocks schedule and execution edits during a run but permits metadata, done, and removal', async () => {
+    const item = await addItem({ title: 'Report', at: 'tomorrow', prompt: 'Write report' }, NOW);
+    const running: TaskRun = { ...finishedRun, status: 'running', finishedAt: undefined, output: undefined };
+    await update((items) => { items[0]!.run = running; });
+    for (const patch of [{ at: 'next week' }, { prompt: 'Different' }, { prompt: null }, { cwd: '.' }, { cwd: null }]) {
+      await expect(updateItem(item.id, patch, NOW)).rejects.toThrow(/task is running/);
+    }
+    const edited = await updateItem(item.id, { title: 'New title', notes: 'New context', lead: 5, tags: ['work'] }, NOW);
+    expect(edited.run?.status).toBe('running');
+    expect(edited.title).toBe('New title');
+    expect((await completeItem(item.id)).run?.status).toBe('running');
+    expect((await completeItem(item.id, false)).run?.status).toBe('running');
+    expect((await removeItem(item.id)).run?.status).toBe('running');
+    expect(await listItems({ includeDone: true })).toEqual([]);
   });
 });

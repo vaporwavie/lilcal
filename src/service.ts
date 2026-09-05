@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { dataPath } from './store.js';
 
 export const SERVICE_NAME = 'lilcal';
 
@@ -11,17 +12,28 @@ export function unitPath(): string {
   return join(base, 'systemd', 'user', `${SERVICE_NAME}.service`);
 }
 
+// systemd expands specifiers in all values and dollar variables in ExecStart.
+function unitQuote(value: string, command = false): string {
+  return JSON.stringify(value.replace(/%/g, '%%').replace(/\$/g, () => command ? '$$' : '$'));
+}
 export function unitText(): string {
   const node = realpathSync(process.execPath);
   const cli = join(dirname(fileURLToPath(import.meta.url)), 'cli.ts');
+  const configuredPi = process.env.LILCAL_PI || Bun.which('pi') || 'pi';
+  const pi = configuredPi.includes('/') ? resolve(configuredPi) : configuredPi;
   return [
     '[Unit]',
-    'Description=lilcal reminder notifications',
+    'Description=lilcal scheduled tasks and notifications',
     'After=graphical-session.target',
     '',
     '[Service]',
     'Type=simple',
-    `ExecStart=${node} ${cli} daemon`,
+    `ExecStart=${unitQuote(node, true)} ${unitQuote(cli, true)} daemon`,
+    'WorkingDirectory=~',
+    `Environment=${unitQuote(`PATH=${process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'}`)}`,
+    `Environment=${unitQuote(`LILCAL_PI=${pi}`)}`,
+    `Environment=${unitQuote(`LILCAL_DATA=${resolve(dataPath())}`)}`,
+    'KillMode=control-group',
     'Restart=on-failure',
     'RestartSec=5',
     '',
@@ -40,7 +52,8 @@ export function installService(): string {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, unitText());
   systemctl('daemon-reload');
-  systemctl('enable', '--now', SERVICE_NAME);
+  systemctl('enable', SERVICE_NAME);
+  systemctl('restart', SERVICE_NAME);
   return path;
 }
 

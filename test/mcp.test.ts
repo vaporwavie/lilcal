@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { createServer, createTools } from '../src/mcp.js';
-import { load } from '../src/store.js';
+import { load, update } from '../src/store.js';
 import { NOW, useTempStore } from './helpers.js';
 
 const notifier = mock(async () => 42);
@@ -69,6 +71,38 @@ describe('mcp server', () => {
     expect(text(res)).toMatch(/could not understand date/);
     const missing = await call('add_reminder', { at: 'tomorrow' });
     expect(text(missing)).toMatch(/title is required/);
+  });
+
+  it('creates and edits tasks, searches prompts, and exposes persisted run results', async () => {
+    const added = await call('add_reminder', { title: 'Report', at: 'tomorrow', prompt: '  Summarize logs  ', cwd: '.', lead_minutes: 10 });
+    expect((added?.result as { isError?: boolean }).isError).toBeUndefined();
+    const item = (await load())[0]!;
+    expect(item.prompt).toBe('Summarize logs');
+    expect(item.cwd).toBe(resolve('.'));
+    const run = { id: 'pi-1', status: 'failed' as const, startedAt: NOW.toISOString(), deadlineAt: NOW.toISOString(), output: 'Partial report', error: 'pi failed' };
+    await update((items) => { items[0]!.run = run; });
+    const listed = text(await call('list_reminders', { query: 'LOGS' }));
+    expect(listed).toContain('Partial report');
+    expect(listed).toContain('pi failed');
+    await call('update_reminder', { id: item.id, prompt: 'Summarize more logs', cwd: '' });
+    expect((await load())[0]!.cwd).toBe(homedir());
+    expect((await load())[0]!.run).toEqual(run);
+    await call('update_reminder', { id: item.id, prompt: '' });
+    expect((await load())[0]!.prompt).toBeUndefined();
+    expect((await load())[0]!.cwd).toBeUndefined();
+    expect((await load())[0]!.run).toEqual(run);
+    await call('update_reminder', { id: item.id, prompt: 'Retry', at: 'next monday' });
+    expect((await load())[0]!.run).toBeUndefined();
+    await call('update_reminder', { id: item.id, prompt: null });
+    expect((await load())[0]!.prompt).toBeUndefined();
+  });
+
+  it('reports invalid task fields without creating items', async () => {
+    for (const fields of [{ prompt: '' }, { prompt: 42 }, { cwd: '.' }, { prompt: 'Work', cwd: 'package.json' }]) {
+      const result = await call('add_reminder', { title: 'Task', at: 'tomorrow', ...fields });
+      expect((result?.result as { isError: boolean }).isError).toBe(true);
+    }
+    expect(await load()).toEqual([]);
   });
 
   it('sends notifications through the notifier', async () => {
