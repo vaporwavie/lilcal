@@ -12,7 +12,6 @@ export const INSTRUCTIONS = [
   'Only set "prompt" when the user wants work performed, not for reminder-only requests. It opts into autonomous noninteractive pi execution at "at", with pi tool access under the user\'s permissions. "lead_minutes" advances only the desktop reminder, not execution.',
   'Set "cwd" to an existing directory for the task; it defaults to the user\'s home. Task results and errors are stored in "run", returned by list_reminders and CLI show/list --json. Editing "at" re-arms execution; editing prompt or cwd preserves run history. Active tasks cannot have at, prompt, or cwd edited. Completing or removing a task does not stop an active pi process.',
   'Every response includes the resolved local time. Repeat it to the user so they can correct it.',
-  'At the start of a session, list_reminders shows what is due, overdue, or coming up.',
   'send_notification shows a desktop notification immediately. Use it to get the user\'s attention when a long task finishes or needs input.',
 ].join('\n');
 
