@@ -57,7 +57,74 @@ Execution is claimed in the data file before pi starts. Failed or interrupted ru
 
 While a task is running, its time, prompt, and directory cannot be edited. Marking it done or deleting it does not cancel the active process; deleting also discards its eventual result. Stopping the daemon interrupts its active pi processes. `daemon --once` waits for the batch it starts (up to four tasks).
 
-`LILCAL_PI` selects an alternative pi executable or wrapper (a path or executable name, not a shell command). The service installer captures this setting, your `PATH`, and the resolved data path, and restarts the service. Reinstall after changing these settings. Configure any additional provider environment in the systemd user service environment; the installer does not copy authentication variables.
+`lilcal pi <id>` opens an interactive pi session in a new terminal window with the same event context and prompt, for running or adjusting a task by hand. It uses `LILCAL_TERMINAL` or `TERMINAL` when set, otherwise the first of xdg-terminal-exec, konsole, kitty, alacritty, foot, wezterm, ghostty, gnome-terminal, xfce4-terminal, or xterm on `PATH`.
+
+`LILCAL_PI` selects an alternative pi executable or wrapper (a path or executable name, not a shell command). The service and widget installers capture this setting, your `PATH`, and the resolved data path, and restarts the service. Reinstall after changing these settings. Configure any additional provider environment in the systemd user service environment; the installer does not copy authentication variables.
+
+## Status line
+
+`lilcal status` prints one line: overdue count, running tasks, and the next item with when it is due. `--width` truncates it for tight spaces, `--json` returns the overdue, today, and later lists the widget reads.
+
+```sh
+lilcal status                     # 1 overdue · Merge release tomorrow 09:00
+lilcal status --width 40
+lilcal status --json
+```
+
+Starship, in `~/.config/starship.toml`:
+
+```toml
+[custom.lilcal]
+command = "lilcal status --width 48"
+when = true
+format = "[$output]($style) "
+style = "yellow"
+```
+
+tmux, in `~/.tmux.conf`:
+
+```
+set -g status-right "#(lilcal status --width 48)"
+set -g status-interval 30
+```
+
+## Plasma widget
+
+`lilcal widget install` installs a KDE Plasma 6 panel widget named lilcal. Add it from Edit Mode > Add Widgets. The panel shows the status line, red with a warning icon while anything is overdue. Clicking opens the agenda with overdue, today, and later sections, and a checkmark completes an item. Task events also show a play button that opens an interactive pi session in a new terminal window with the event's prompt (see `lilcal pi`). It polls `lilcal status --json` every 30 seconds and again when opened. Both the command and the interval are in the widget's settings.
+
+The installer bakes in absolute paths for Bun, this checkout, and the data file, the same way the systemd unit does, so plasmashell does not need `lilcal` on its `PATH`. Rerun `lilcal widget install` after moving the checkout or changing `LILCAL_DATA`. `lilcal widget uninstall` removes it.
+
+## Morning digest
+
+`lilcal digest 08:30` makes the daemon send one notification per day at that time with everything overdue and everything scheduled for today. When today is empty it names the next item instead. The daemon sends it once per calendar day after the configured time, so a machine that was asleep at 08:30 gets it on wake.
+
+```sh
+lilcal digest 08:30      # daily at 08:30
+lilcal digest            # current setting and today's digest text
+lilcal digest send       # send it right now
+lilcal digest off
+```
+
+The setting lives next to the items in the data file under `settings.digest`, with the day it was last sent.
+
+## Recurring events
+
+Use the existing add/edit commands or MCP tools to set `repeat`:
+
+```sh
+lilcal add "Standup" --at "monday 9am" --end "9:30am" --repeat weekly
+lilcal add "Water plants" --at tomorrow --repeat "every 2 days"
+lilcal edit <id> --repeat monthly
+lilcal edit <id> --repeat ""       # keep the current occurrence as a one-off
+```
+
+Rules are `daily`, `weekly`, `monthly`, `yearly`, or `every N days/weeks/months/years`, with a positive integer interval. MCP `add_reminder` and `update_reminder` accept the same `repeat` strings. An empty string or null clears recurrence on update. Recurrence is for reminders and events, not pi tasks.
+
+The daemon advances the same item ID to its next occurrence after successful notification, but never before the current start time. Lead notifications therefore leave the upcoming event visible until it starts. Failed deliveries retry without moving the event. After downtime, an unnotified event fires once, then skips missed periods to the first future start. Run `lilcal service install` to enable automatic advancement, or keep `lilcal daemon` running.
+
+Times follow the machine's local timezone and retain their original wall-clock time across daylight saving changes. A nonexistent spring-forward time moves forward by the DST gap for that occurrence. Monthly dates clamp to the last day of shorter months without drifting (January 31, February 28, March 31). Yearly February 29 events use February 28 in non-leap years. Event duration, all-day status, tags, notes, and lead time are preserved.
+
+The CLI, MCP, and TUI show the current occurrence, not an expanded calendar of all future dates. Past occurrences are not stored separately. `done` (or `x` in the TUI) stops the entire series, `undone` resumes it, and `rm` deletes it. Editing `at` or `repeat` resets the recurrence anchor to the current start. Use CLI or MCP to configure recurrence, the TUI's quick-add remains unchanged.
 
 ## Terminal
 
@@ -97,7 +164,7 @@ lilcal daemon --once               # single check, cron friendly
 
 ## Data
 
-Items live in `~/.local/share/lilcal/items.json` (`LILCAL_DATA` overrides the path, `lilcal path` prints it). Each item has `id`, `title`, `at`, `createdAt`, and optionally `end`, `allDay`, `notes`, `tags`, `lead`, `done`, `notifiedAt`, `prompt`, `cwd`, and `run`. A run records its ID, status (`running`, `succeeded`, or `failed`), start/deadline/finish times, output or error, and result notification time. Rescheduling clears the previous run. Times are ISO 8601 with the local offset. Writes go through a lock and an atomic rename, so the TUI, CLI, daemon, and agents can write at the same time.
+Items live in `~/.local/share/lilcal/items.json` (`LILCAL_DATA` overrides the path, `lilcal path` prints it). The file holds `items` plus an optional `settings` object for the digest. Each item has `id`, `title`, `at`, `createdAt`, and optionally `end`, `allDay`, `notes`, `tags`, `lead`, `done`, `notifiedAt`, `repeat`, `prompt`, `cwd`, and `run`. A repeat rule records its `frequency`, positive integer `interval`, and original local `anchor` timestamp. Existing one-off items need no migration. A run records its ID, status (`running`, `succeeded`, or `failed`), start/deadline/finish times, output or error, and result notification time. Rescheduling clears the previous run. Times are ISO 8601 with the local offset. Writes go through a lock and an atomic rename, so the TUI, CLI, daemon, and agents can write at the same time.
 
 ## Develop
 

@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.lilcal.status",
+    "Name": "lilcal",
+    "Description": "Next reminder, overdue count, and today's agenda",
+    "Icon": "x-office-calendar",
+    "Category": "Date and Time",
+    "License": "MIT",
+    "Version": "0.1",
+    "Authors": [{ "Name": "Luiz Nickel" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

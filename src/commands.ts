@@ -3,12 +3,14 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { DEFAULT_HOUR, extractWhen, parseWhen, toISO, type Parsed } from './dates.js';
 import { atMs, findItem, newId, sortItems, validate, type Item } from './model.js';
+import { parseRepeat } from './recurrence.js';
 import { load, update } from './store.js';
 
 export type AddInput = {
   title: string;
   at?: string;
   end?: string;
+  repeat?: string;
   notes?: string;
   prompt?: string;
   cwd?: string;
@@ -29,6 +31,7 @@ export type Patch = {
   title?: string;
   at?: string;
   end?: string | null;
+  repeat?: string | null;
   notes?: string | null;
   prompt?: string | null;
   cwd?: string | null;
@@ -57,6 +60,7 @@ export async function addItem(input: AddInput, now: Date = new Date()): Promise<
   }
   const item: Item = { id: newId(), title, at: toISO(when.date), createdAt: toISO(now) };
   if (!when.hasTime) item.allDay = true;
+  if (input.repeat !== undefined) item.repeat = parseRepeat(input.repeat, item.at);
   const end = input.end ? parseEnd(input.end, when.date) : when.end ? toISO(when.end) : undefined;
   if (end) item.end = end;
   if (input.notes?.trim()) item.notes = input.notes.trim();
@@ -107,12 +111,15 @@ export async function updateItem(id: string, patch: Patch, now: Date = new Date(
         date.setFullYear(current.getFullYear(), current.getMonth(), current.getDate());
       }
       item.at = toISO(date);
+      if (item.repeat) item.repeat.anchor = item.at;
       if (when.hasTime) delete item.allDay;
       else item.allDay = true;
       delete item.notifiedAt;
       delete item.run;
       if (when.end) item.end = toISO(when.end);
     }
+    if (patch.repeat === null) delete item.repeat;
+    else if (patch.repeat !== undefined) item.repeat = parseRepeat(patch.repeat, item.at);
     if (patch.end === null) delete item.end;
     else if (patch.end !== undefined) item.end = parseEnd(patch.end, new Date(item.at));
     if (patch.notes === null) delete item.notes;

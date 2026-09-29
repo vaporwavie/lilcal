@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { isAbsolute } from 'node:path';
+import { validateRepeat, type Recurrence } from './recurrence.js';
 
 export type TaskRun = {
   id: string;
@@ -13,12 +14,17 @@ export type TaskRun = {
   notificationClaim?: { id: string; until: string };
 };
 
+export type Settings = {
+  digest?: { time: string; lastSentOn?: string };
+};
+
 export type Item = {
   id: string;
   title: string;
   at: string;
   end?: string;
   allDay?: boolean;
+  repeat?: Recurrence;
   notes?: string;
   prompt?: string;
   cwd?: string;
@@ -66,6 +72,10 @@ export function findItem(items: Item[], idOrPrefix: string): Item {
 
 export function validate(item: Item): void {
   if (!item.title.trim()) throw new Error('title is empty');
+  if (item.repeat) {
+    validateRepeat(item.repeat);
+    if (item.prompt || item.run) throw new Error('repeat is not supported for pi tasks, clear the task and reschedule first');
+  }
   if (item.prompt !== undefined && !item.prompt.trim()) throw new Error('prompt is empty');
   if (item.cwd !== undefined) {
     if (!item.prompt) throw new Error('cwd requires a prompt');

@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { runAgent, TASK_KILL_GRACE_MS, TASK_TIMEOUT_MS, type AgentRunner } from './agent.js';
-import { fmtRelative, fmtWhen, toISO } from './dates.js';
+import { dayKey, fmtRelative, fmtWhen, toISO } from './dates.js';
+import { digestDue, digestFor } from './digest.js';
 import { atMs, notifyAtMs, type Item } from './model.js';
 import { notify as sendNotification, type Notification, type Notifier } from './notify.js';
-import { load, update } from './store.js';
+import { advanceRepeat } from './recurrence.js';
+import { load, loadSettings, update, updateSettings } from './store.js';
 
 export function due(items: Item[], now: number): Item[] {
   return items.filter((item) => !item.done && !item.notifiedAt && notifyAtMs(item) <= now);
@@ -28,6 +30,8 @@ export type TickResult = {
   executed: Item[];
   failed: { item: Item; error: Error }[];
   tasks: Promise<void>[];
+  digest?: Notification;
+  digestError?: Error;
 };
 export type TickOptions = {
   background?: boolean;
@@ -79,11 +83,27 @@ async function notifyTask(item: Item, send: Notifier, result: TickResult): Promi
   }
 }
 
+async function sendDigest(items: Item[], now: number, send: Notifier, result: TickResult): Promise<void> {
+  const date = new Date(now);
+  if (!digestDue(await loadSettings(), date)) return;
+  try {
+    const digest = digestFor(items, date);
+    await send(digest);
+    await updateSettings((settings) => {
+      if (settings.digest) settings.digest.lastSentOn = dayKey(date);
+    });
+    result.digest = digest;
+  } catch (err) {
+    result.digestError = err as Error;
+  }
+}
+
 /** Claim before launching: a lost process becomes a failed run, never an automatic replay. */
 async function claimTasks(now: number): Promise<Item[]> {
   const claimed: Item[] = [];
   await update((items) => {
     for (const item of items) {
+      advanceRepeat(item, now);
       if (item.run?.status === 'running' && new Date(item.run.deadlineAt).getTime() + TASK_KILL_GRACE_MS + 3000 <= now) {
         item.run.status = 'failed';
         item.run.finishedAt = toISO(new Date(now));
@@ -158,6 +178,7 @@ export async function tick(
         const current = fresh.find((i) => i.id === item.id);
         if (current && !current.done && current.at === item.at && current.lead === item.lead && current.prompt === item.prompt) {
           current.notifiedAt = toISO(new Date(now));
+          advanceRepeat(current, now);
         }
       });
       result.notified.push(item);
@@ -165,6 +186,7 @@ export async function tick(
       result.failed.push({ item, error: err as Error });
     }
   }
+  await sendDigest(items, now, send, result);
   // Retry delivery of saved results without rerunning pi. Newly claimed tasks deliver above.
   for (const item of items) {
     if (item.run && !claimedIds.has(item.run.id)) await notifyTask(item, send, result);
@@ -191,6 +213,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
     for (const item of result.notified) log(`notified ${item.id} ${item.title}`);
     for (const item of result.executed) log(`pi ${item.run!.status} ${item.id} ${item.title}`);
     for (const { item, error } of result.failed) log(`failed ${item.id} ${item.title}: ${error.message}`);
+    if (result.digest) log(`digest ${result.digest.summary}`);
+    if (result.digestError) log(`digest failed: ${result.digestError.message}`);
   };
   try {
     if (!opts.once) log(`lilcal daemon started, checking every ${Math.round(opts.intervalMs / 1000)}s`);

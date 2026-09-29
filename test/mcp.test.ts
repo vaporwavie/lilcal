@@ -105,6 +105,26 @@ describe('mcp server', () => {
     expect(await load()).toEqual([]);
   });
 
+  it('adds, lists, edits, and clears recurrence through the existing tools', async () => {
+    const added = text(await call('add_reminder', { title: 'Standup', at: 'tomorrow', repeat: 'weekly' }));
+    expect(added).toContain('[repeat: weekly]');
+    const item = (await load())[0]!;
+    expect(item.repeat).toEqual({ frequency: 'weekly', interval: 1, anchor: item.at });
+    expect(text(await call('list_reminders', {}))).toContain('[repeat: weekly]');
+    await call('update_reminder', { id: item.id, repeat: 'every 2 months' });
+    expect((await load())[0]!.repeat?.interval).toBe(2);
+    await call('update_reminder', { id: item.id, repeat: '' });
+    expect((await load())[0]!.repeat).toBeUndefined();
+    await call('update_reminder', { id: item.id, repeat: 'yearly' });
+    await call('update_reminder', { id: item.id, repeat: null });
+    expect((await load())[0]!.repeat).toBeUndefined();
+    for (const repeat of [42, {}, '', 'never', null]) {
+      const result = await call('add_reminder', { title: 'Invalid', at: 'tomorrow', repeat });
+      expect((result?.result as { isError: boolean }).isError).toBe(true);
+    }
+    expect(await load()).toHaveLength(1);
+  });
+
   it('sends notifications through the notifier', async () => {
     expect(text(await call('send_notification', { summary: 'Build done', body: 'all green', urgent: true }))).toContain('42');
     expect(notifier).toHaveBeenCalledWith({ summary: 'Build done', body: 'all green', urgency: 2 });

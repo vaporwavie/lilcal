@@ -1,9 +1,11 @@
 import { fmtRelative, fmtWhen } from './dates.js';
+import { formatRepeat } from './recurrence.js';
 import { isOverdue, type Item } from './model.js';
 
 export function describeItem(item: Item, now: Date = new Date()): string {
   const at = new Date(item.at);
   const parts = [item.title, `${fmtWhen(at, item.allDay ?? false, now)} (${fmtRelative(at, now)})`, `id ${item.id}`];
+  if (item.repeat) parts.push(`[repeat: ${formatRepeat(item.repeat)}]`);
   if (item.tags?.length) parts.push(item.tags.map((t) => `#${t}`).join(' '));
   if (item.prompt || item.run) parts.push(taskLabel(item));
   if (item.done) parts.unshift('[done]');
@@ -17,7 +19,8 @@ export function formatLine(item: Item, now: Date = new Date()): string {
   const rel = fmtRelative(at, now).padEnd(12);
   const tags = item.tags?.length ? `  ${item.tags.map((t) => `#${t}`).join(' ')}` : '';
   const task = item.prompt || item.run ? `  ${taskLabel(item)}` : '';
-  return `${mark} ${item.id}  ${when} ${rel} ${item.title}${tags}${task}`;
+  const repeat = item.repeat ? `  [repeat: ${formatRepeat(item.repeat)}]` : '';
+  return `${mark} ${item.id}  ${when} ${rel} ${item.title}${tags}${task}${repeat}`;
 }
 
 export function formatDetail(item: Item, now: Date = new Date()): string {
@@ -28,6 +31,7 @@ export function formatDetail(item: Item, now: Date = new Date()): string {
     ['at', `${fmtWhen(at, item.allDay ?? false, now)} (${fmtRelative(at, now)})`],
   ];
   if (item.end) rows.push(['end', fmtWhen(new Date(item.end), false, now)]);
+  if (item.repeat) rows.push(['repeat', formatRepeat(item.repeat)], ['repeat anchor', item.repeat.anchor]);
   if (item.allDay) rows.push(['all day', 'yes']);
   if (item.lead) rows.push(['notify', `${item.lead} min before`]);
   if (item.tags?.length) rows.push(['tags', item.tags.join(', ')]);

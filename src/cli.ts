@@ -7,8 +7,12 @@ import { formatDetail, formatLine } from './format.js';
 import { serve } from './mcp.js';
 import type { Item } from './model.js';
 import { notify } from './notify.js';
+import { openPi } from './open.js';
 import { installService, serviceStatus, uninstallService, unitPath, unitText } from './service.js';
-import { dataPath } from './store.js';
+import { buildStatus, truncate } from './status.js';
+import { load, loadSettings, updateSettings, dataPath } from './store.js';
+import { digestFor, parseDigestTime } from './digest.js';
+import { installWidget, uninstallWidget, widgetInstallPath } from './widget.js';
 import { runTui } from './tui/app.js';
 import { VERSION } from './version.js';
 
@@ -16,27 +20,35 @@ const USAGE = `lilcal ${VERSION}: reminders and events for you and your agents
 
 Usage
   lilcal                         open the TUI
-  lilcal add <title> [--at <when>] [--end <when>] [--notes <text>] [--tag <t>]... [--lead <min>] [--prompt <task>] [--cwd <dir>]
+  lilcal add <title> [--at <when>] [--end <when>] [--repeat <rule>] [--notes <text>] [--tag <t>]... [--lead <min>] [--prompt <task>] [--cwd <dir>]
   lilcal list [--all] [--from <when>] [--to <when>] [--tag <t>] [-q <text>]
   lilcal show <id>
-  lilcal edit <id> [--title <t>] [--at <when>] [--end <when>] [--notes <text>] [--tag <t>]... [--lead <min>] [--prompt <task>] [--cwd <dir>]
+  lilcal status [--width <n>]    one line: overdue count, running tasks, next item (--json for the widget)
+  lilcal digest [<HH:MM>|off|send]  daily agenda notification from the daemon
+  lilcal edit <id> [--title <t>] [--at <when>] [--end <when>] [--repeat <rule>] [--notes <text>] [--tag <t>]... [--lead <min>] [--prompt <task>] [--cwd <dir>]
   lilcal done <id>...            mark done (undone reverses it)
+  lilcal pi <id>                 open interactive pi in a terminal with the task prompt
   lilcal rm <id>...              delete
   lilcal notify <summary> [body] [--urgent]
   lilcal daemon [--interval <sec>] [--once]
   lilcal service install|uninstall|status|unit
+  lilcal widget install|uninstall|path   Plasma panel widget
   lilcal mcp                     MCP server on stdio for Claude Code, Codex, and friends
   lilcal path                    print the data file
 
 Every command that prints an item accepts --json.
 Dates: "next tuesday 10am", "tomorrow", "in 2 hours", "friday", "2026-09-12T15:00".
 Without --at the date comes from the title: lilcal add "call mom sunday 6pm".
-Pass --end "" or --notes "" to edit to clear a field.
+Pass --end "", --repeat "", or --notes "" to edit to clear a field.
+--repeat accepts daily, weekly, monthly, yearly, or "every N days/weeks/months/years".
+The daemon advances recurring events after delivery, never before their start. Lists show the current occurrence.
+Done stops the series, undone resumes it. Recurrence is not supported for pi tasks.
 --prompt schedules autonomous, noninteractive pi work at --at, with your pi tool permissions.
 --cwd selects its working directory (default: home). --lead only advances the notification.
 Edit --prompt "" clears the task; --cwd "" resets its directory to home.
 Editing --at re-arms execution; prompt/cwd edits do not. Active tasks cannot be rescheduled.
 Task results are available in show and list --json.
+pi <id> opens an interactive session with the task prompt. LILCAL_TERMINAL or TERMINAL picks the terminal.
 `;
 
 type Opts = Record<string, string | boolean | string[] | undefined>;
@@ -83,13 +95,14 @@ async function main(argv: string[]): Promise<void> {
       console.log(VERSION);
       return;
     case 'add': {
-      const { opts, positionals } = parse(rest, { at: text, end: text, notes: text, prompt: text, cwd: text, tag: tags, lead: text, json });
+      const { opts, positionals } = parse(rest, { at: text, end: text, repeat: text, notes: text, prompt: text, cwd: text, tag: tags, lead: text, json });
       const title = positionals.join(' ');
       if (!title.trim()) throw new Error('add needs a title');
       const item = await addItem({
         title,
         at: opts.at as string | undefined,
         end: opts.end as string | undefined,
+        repeat: opts.repeat as string | undefined,
         notes: opts.notes as string | undefined,
         prompt: opts.prompt as string | undefined,
         cwd: opts.cwd as string | undefined,
@@ -121,14 +134,48 @@ async function main(argv: string[]): Promise<void> {
       if (opts.json) return console.log(JSON.stringify(item, null, 2));
       return console.log(formatDetail(item));
     }
+    case 'status': {
+      const { opts } = parse(rest, { width: text, json });
+      const status = buildStatus(await load());
+      if (opts.json) return console.log(JSON.stringify(status, null, 2));
+      const width = opts.width === undefined ? 0 : Number(opts.width);
+      if (!Number.isFinite(width) || width < 0) throw new Error('--width must be a number of characters');
+      return console.log(truncate(status.line, width));
+    }
+    case 'digest': {
+      const { opts, positionals } = parse(rest, { json });
+      const [action] = positionals;
+      if (action === 'off') {
+        await updateSettings((settings) => { delete settings.digest; });
+        return console.log('digest off');
+      }
+      if (action === 'send') {
+        const id = await notify(digestFor(await load()));
+        return console.log(`sent digest ${id}`);
+      }
+      if (action !== undefined) {
+        const time = parseDigestTime(action);
+        await updateSettings((settings) => {
+          settings.digest = { ...settings.digest, time };
+        });
+        return console.log(`digest daily at ${time}`);
+      }
+      const settings = await loadSettings();
+      const preview = digestFor(await load());
+      if (opts.json) return console.log(JSON.stringify({ ...settings.digest, preview }, null, 2));
+      const digest = settings.digest;
+      console.log(digest ? `digest daily at ${digest.time}${digest.lastSentOn ? ` (last sent ${digest.lastSentOn})` : ''}` : 'digest off');
+      return console.log(`\n${preview.summary}\n${preview.body ?? ''}`);
+    }
     case 'edit': {
-      const { opts, positionals } = parse(rest, { title: text, at: text, end: text, notes: text, prompt: text, cwd: text, tag: tags, lead: text, json });
+      const { opts, positionals } = parse(rest, { title: text, at: text, end: text, repeat: text, notes: text, prompt: text, cwd: text, tag: tags, lead: text, json });
       const id = positionals[0];
       if (!id) throw new Error('edit needs an id');
       const patch: Patch = {};
       if (typeof opts.title === 'string') patch.title = opts.title;
       if (typeof opts.at === 'string') patch.at = opts.at;
       if (typeof opts.end === 'string') patch.end = opts.end === '' ? null : opts.end;
+      if (typeof opts.repeat === 'string') patch.repeat = opts.repeat === '' ? null : opts.repeat;
       if (typeof opts.notes === 'string') patch.notes = opts.notes === '' ? null : opts.notes;
       if (typeof opts.prompt === 'string') patch.prompt = opts.prompt === '' ? null : opts.prompt;
       if (typeof opts.cwd === 'string') patch.cwd = opts.cwd === '' ? null : opts.cwd;
@@ -145,6 +192,13 @@ async function main(argv: string[]): Promise<void> {
       if (!positionals.length) throw new Error(`${command} needs an id`);
       for (const id of positionals) printItem(await completeItem(id, command === 'done'), Boolean(opts.json), command === 'done' ? 'Done' : 'Reopened');
       return;
+    }
+    case 'pi': {
+      const { opts, positionals } = parse(rest, { json });
+      if (!positionals[0]) throw new Error('pi needs an id');
+      const launch = openPi(await getItem(positionals[0]));
+      if (opts.json) return console.log(JSON.stringify(launch.argv));
+      return console.log(`opened pi for ${positionals[0]} in ${launch.argv[0]}`);
     }
     case 'rm':
     case 'remove': {
@@ -178,6 +232,13 @@ async function main(argv: string[]): Promise<void> {
         return;
       }
       throw new Error('service needs install, uninstall, status, or unit');
+    }
+    case 'widget': {
+      const action = rest[0];
+      if (action === 'install') return console.log(`installed ${installWidget()}`);
+      if (action === 'uninstall') return uninstallWidget();
+      if (action === 'path') return console.log(widgetInstallPath());
+      throw new Error('widget needs install, uninstall, or path');
     }
     case 'mcp':
       return serve();
