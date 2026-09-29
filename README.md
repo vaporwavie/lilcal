@@ -1,5 +1,7 @@
 # lilcal
 
+> **Archived.** No longer maintained; reminders moved to Todoist (`td` CLI). Unmerged work lives on the `archive/pre-todoist` branch.
+
 Reminders and scheduled agent tasks. One JSON file underneath, four ways in: a calendar TUI, a CLI, an MCP server, and a daemon that runs tasks through pi and delivers desktop notifications over D-Bus.
 
 Tell an agent "remind me next week to follow up on this" for a desktop reminder, or "review this project tomorrow morning" for work performed independently. Tasks run at the scheduled time and their results arrive on your desktop.
